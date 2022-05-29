@@ -102,3 +102,9 @@ dist
 
 # TernJS port file
 .tern-port
+
+# TypeScript Build directory
+build/
+
+# IntelliJ project directory
+.idea/
