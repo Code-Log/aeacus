@@ -108,3 +108,6 @@ build/
 
 # IntelliJ project directory
 .idea/
+
+# Credentials
+firebaseCredentials.json
