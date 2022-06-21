@@ -11,19 +11,21 @@ export class UserCreateException {
 }
 
 export class User {
-    private signatures: Array<string>;
-    private readonly hash: string;
+    private readonly authHash: string;
     private readonly username: string;
     private readonly publicKey: string;
     private readonly secretKey: string;
+    readonly salt: string;
     private lastAcknowledgedTimestamp: number;
+    private hmac: string;
 
-    constructor(username: string, signatures: Array<string>, hash: string, publicKey: string, secretKey: string, lastAcknowledgedTimestamp: number) {
-        this.signatures = signatures;
+    constructor(username: string, hash: string, publicKey: string, secretKey: string, lastAcknowledgedTimestamp: number, salt: string, hmac: string) {
         this.username = username;
-        this.hash = hash;
+        this.authHash = hash;
         this.publicKey = publicKey;
         this.secretKey = secretKey;
+        this.salt = salt;
+        this.hmac = hmac;
         if (!lastAcknowledgedTimestamp)
             this.lastAcknowledgedTimestamp = 0;
         else
@@ -32,9 +34,9 @@ export class User {
 
     getPublicKey(): crypto.KeyObject {
         return crypto.createPublicKey({
-            key: Buffer.from(this.publicKey, 'base64'),
-            format: 'der',
-            type: 'pkcs1'
+            key: this.publicKey,
+            format: 'pem',
+            type: 'spki'
         });
     }
 
@@ -42,85 +44,46 @@ export class User {
         return this.publicKey;
     }
 
-    getSecretKeyDecrypted(password: string): crypto.KeyObject {
-        return crypto.createPrivateKey({
-            key: Buffer.from(this.secretKey, 'base64'),
-            format: 'der',
-            type: 'pkcs8',
-            passphrase: password
-        });
-    }
-
     getUsername(): string {
         return this.username;
     }
 
     getHash(): string {
-        return this.hash;
+        return this.authHash;
     }
 
-    async createToken(password: string): Promise<string> {
-        if (!this.signatures)
-            this.signatures = new Array<string>();
-
-        const token = crypto.randomBytes(64).toString('base64');
-        const sig = crypto.createSign('RSA-SHA256');
-        sig.write(token);
-        const keyObject = this.getSecretKeyDecrypted(password);
-        const sigString = sig.sign(keyObject, 'hex').toString();
-        this.signatures.push(sigString);
-
-        const db = admin.database();
-        await db.ref(`users/${this.username}`).set(this);
-
-        return token;
-    }
-
-    static async verifyLogin(username: string, password: string): Promise<User> {
+    static async verifyLogin(username: string, authKey: string): Promise<User> {
         const db = admin.database();
         const userSnapshot = await db.ref(`users/${username}`).get();
         const userObject: User = userSnapshot.val();
         const user = new User(
             userObject.username,
-            userObject.signatures,
-            userObject.hash,
+            userObject.authHash,
             userObject.publicKey,
             userObject.secretKey,
-            (!userObject.lastAcknowledgedTimestamp) ? 0 : userObject.lastAcknowledgedTimestamp
+            (!userObject.lastAcknowledgedTimestamp) ? 0 : userObject.lastAcknowledgedTimestamp,
+            userObject.salt,
+            userObject.hmac
         );
 
         const isValid = await argon2Verify({
-            password,
-            hash: user.hash
+            password: authKey,
+            hash: user.authHash
         });
 
         return (isValid) ? user : null;
     }
 
-    verifyToken(token: string): boolean {
-        if (!this.signatures)
-            return false;
-
-        let valid = false;
-        for (const sig of this.signatures) {
-            const verify = crypto.createVerify('RSA-SHA256');
-            verify.write(token);
-            const keyObject = this.getPublicKey();
-            valid = valid || verify.verify(keyObject, sig, 'hex');
-        }
-        return valid;
-    }
-
-    static async createUser(username: string, password: string): Promise<User> {
+    static async createUser(username: string, authKey: string, publicKey: string, secretKey: string, salt: string, hmac: string): Promise<User> {
         const db = admin.database();
         const ref = await db.ref(`users/${username}`).get();
         if (ref.val() != null)
             throw new UserCreateException('User already exists!');
 
-        const salt = crypto.randomBytes(64);
-        const hash = await argon2id({
-            password,
-            salt,
+        const authKeySalt = crypto.randomBytes(64);
+        const authHash = await argon2id({
+            password: authKey,
+            salt: authKeySalt,
             parallelism: 1,
             iterations: 256,
             memorySize: 512,
@@ -128,27 +91,15 @@ export class User {
             outputType: 'encoded'
         });
 
-        const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-            modulusLength: 4096,
-            publicKeyEncoding: {
-                type: 'pkcs1',
-                format: 'der'
-            },
-            privateKeyEncoding: {
-                type: 'pkcs8',
-                format: 'der',
-                cipher: 'aes-256-cbc',
-                passphrase: password
-            }
-        });
-
         const user = new User(
             username,
-            [],
-            hash,
-            publicKey.toString('base64'),
-            privateKey.toString('base64'),
-            0);
+            authHash,
+            publicKey,
+            secretKey,
+            0,
+            salt,
+            hmac
+        );
         try {
             await db.ref(`users/${username}`).set(user);
         } catch (e) {
@@ -160,6 +111,12 @@ export class User {
 
     getSecretKey(): string {
         return this.secretKey;
+    }
+
+    verifyToken(token: string, signature: string): boolean {
+        const verify = crypto.createVerify('RSA-SHA256');
+        verify.write(token);
+        return verify.verify(this.getPublicKey(), signature, 'hex');
     }
 
     async getNewMessages(): Promise<MessagePackage> {
@@ -176,7 +133,16 @@ export class User {
                 ourMessages.push(m);
         }
 
+        ourMessages.sort((a, b) => a.payload.timestamp - b.payload.timestamp);
+
         return new MessagePackage(ourMessages, this.lastAcknowledgedTimestamp);
+    }
+
+    async verifyAuthKey(authKey: string): Promise<boolean> {
+        return await argon2Verify({
+            password: authKey,
+            hash: this.authHash
+        });
     }
 
     static async fromUsername(username: string): Promise<User> {
@@ -189,11 +155,12 @@ export class User {
             if (user.username === username) {
                 return new User(
                     user.username,
-                    user.signatures,
-                    user.hash,
+                    user.authHash,
                     user.publicKey,
                     user.secretKey,
-                    user.lastAcknowledgedTimestamp
+                    user.lastAcknowledgedTimestamp,
+                    user.salt,
+                    user.hmac
                 );
             }
         }
@@ -201,30 +168,37 @@ export class User {
         return null;
     }
 
-    async acknowledgeMessages(timestamps: number[]) {
+    async acknowledgeMessages(timestamps: number[], bad: number[]) {
         const db = admin.database();
         let serverMessages: Message[] = (await db.ref('messages').get()).val();
 
         if (!serverMessages)
             serverMessages = [];
 
-        const newMessages = [];
+        const newMessages: Message[] = [];
         let changed = false;
         for (const message of serverMessages) {
-            for (const timestamp of timestamps) {
-                if (message.user === this.username && message.payload.timestamp === timestamp) {
-                    this.lastAcknowledgedTimestamp = timestamp;
-                    changed = true;
-                    continue;
-                }
+            if (message.user === this.username && timestamps.indexOf(message.payload.timestamp) != -1) {
+                if (message.payload.timestamp > this.lastAcknowledgedTimestamp)
+                    this.lastAcknowledgedTimestamp = message.payload.timestamp;
+                changed = true;
+            } else {
                 newMessages.push(message);
             }
+        }
+
+        const goodMessages: Message[] = [];
+        for (let i = newMessages.length - 1; i >= 0; i--) {
+            if (bad.indexOf(newMessages[i].payload.timestamp) == -1)
+                goodMessages.push(newMessages[i]);
         }
 
         if (changed) {
             await db.ref(`users/${this.username}/lastAcknowledgedTimestamp`).set(this.lastAcknowledgedTimestamp);
         }
 
-        await db.ref('messages').set(newMessages);
+        await db.ref('messages').remove();
+        await db.ref('messages').set(goodMessages);
+        console.log(goodMessages);
     }
 }
