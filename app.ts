@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as dotenv from 'dotenv';
 import { Message } from './message';
 import * as crypto from 'crypto';
+import {Certificate} from './certificate';
 
 dotenv.config();
 
@@ -23,30 +24,6 @@ admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
     databaseURL: 'https://aeacus-default-rtdb.firebaseio.com'
 });
-
-const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', {
-    namedCurve: 'secp128r2',
-    publicKeyEncoding: {
-        type: 'spki',
-        format: 'der'
-    },
-    privateKeyEncoding: {
-        type: 'pkcs8',
-        format: 'der',
-        cipher: 'aes-256-cbc',
-        passphrase: 'Yo'
-    }
-});
-
-const sign = crypto.createSign('SHA256');
-sign.update('Hello World!');
-const signature = sign.sign(publicKey, 'hex');
-console.log(`Signature: ${signature}`);
-
-console.log(`pk: ${publicKey.toString('hex')}`);
-console.log(`sk: ${privateKey.toString('hex')}`);
-
-// 0x7F89De2d83d5af1582b1952669c4fA3e361d068B
 
 app.post('/getUser', async (req, res) => {
     const username = req.body.uname;
@@ -218,6 +195,27 @@ app.post('/acknowledgeMessages', async (req, res) => {
     } catch (e) {
         console.error(e);
         res.json({status: 'error', message: 'An unknown error occurred!'}).end();
+    }
+});
+
+app.post('/publishCertificate', async (req, res) => {
+    const cert: Certificate = req.body.certificate;
+
+    if (!cert) {
+        res.json({ status: 'error', message: 'Missing arguments!' }).end();
+        return;
+    }
+
+    if (!Certificate.prototype.isValid.call(cert)) {
+        res.json({ status: 'error', message: 'Invalid certificate!' }).end();
+        return;
+    }
+
+    try {
+        await Certificate.publish(cert);
+    } catch (e) {
+        console.error(e);
+        res.json({ status: 'error', message: 'Certificate could not be published' }).end();
     }
 });
 

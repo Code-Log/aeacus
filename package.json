@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.ts",
   "scripts": {
-    "deploy": "gcloud app deploy",
+    "deploy": "npm run gcp-build && gcloud app deploy",
     "gcp-build": "tsc -p .",
     "start": "node build/app.js",
     "lint": "node_modules/.bin/eslint *.ts"
