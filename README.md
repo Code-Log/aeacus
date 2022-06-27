@@ -101,7 +101,7 @@ doing signature verification and timestamp checking.
 The client must sort the message package by timestamp again after receiving it.
 The client then iterates through all the messages, going from oldest timestamp to newest, and verify two things:
 
-1. The client must verify that the timestamp hasn't been seen before.
+1. The client must verify that the timestamp is strictly larger than the last seen timestamp.
 2. The client must verify that the signature attached to the message matches the payload.
 
 If any of these checks fails, the client must add the erroneous messages to a 'bad messages' list.
