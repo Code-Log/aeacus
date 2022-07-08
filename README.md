@@ -108,3 +108,8 @@ If any of these checks fails, the client must add the erroneous messages to a 'b
 The client then sends the timestamps of the 'good' and 'bad' messages back to the server.
 The server then updates it's version of the last acknowledged timestamp accordingly and discards all messages in the 'bad'
 pile without updating the last ack.
+
+Note that the server **DOES NOT** do **ANY** verification of the messages. It serves only as temporary storage for messages
+until the relavent client requests and acknowledges or denies them.
+
+After a message is either acknowledged or marked 'bad', the server will immediately delete it.

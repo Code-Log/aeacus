@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import * as admin from 'firebase-admin';
 import {argon2id, argon2Verify} from 'hash-wasm';
-import {Message, MessagePackage} from './message';
+import {Message, MessagePackage, MessageContext} from './message';
 
 export class UserCreateException {
     message: string;

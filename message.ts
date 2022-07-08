@@ -18,6 +18,19 @@ export class CommandPayload implements Payload {
     }
 }
 
+export class MessageContext {
+    static listeners: ((Message) => void)[] = [];
+
+    static addListener(listener: ((Message) => void)): void {
+        MessageContext.listeners.push(listener);
+    }
+
+    static message(msg: Message) {
+        for (const listener of MessageContext.listeners)
+            listener(msg);
+    }
+}
+
 export class Message {
     readonly payload: Payload;
     readonly signature: string;
@@ -41,8 +54,15 @@ export class Message {
         currentMessages.push(message);
         await db.ref('messages').set(currentMessages);
 
+        MessageContext.message(message);
+
         return true;
     }
+}
+
+export interface MessageAck {
+    ack: number[];
+    bad: number[];
 }
 
 export class MessagePackage {

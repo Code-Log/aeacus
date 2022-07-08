@@ -4,9 +4,11 @@ import {User, UserCreateException} from './user';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
 import * as dotenv from 'dotenv';
-import { Message } from './message';
+import {Message, MessageAck, MessageContext} from './message';
 import * as crypto from 'crypto';
 import {Certificate} from './certificate';
+import {WebSocket} from 'ws';
+import {auth} from 'firebase-admin';
 
 dotenv.config();
 
@@ -222,4 +224,82 @@ app.post('/publishCertificate', async (req, res) => {
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
     console.log(`Server listening on ${PORT}...`);
+});
+
+const SOCKET_PORT = process.env.SOCKET_PORT || 8081;
+const server = new WebSocket.Server({
+    port: SOCKET_PORT as number
+});
+
+let sockets: AuthenticatedSocket[] = [];
+
+MessageContext.addListener((msg: Message): void => {
+    for (const socket of sockets) {
+        if (socket.user === msg.user)
+            socket.socket.send(JSON.stringify({ type: 'message', payload: msg }));
+    }
+});
+
+interface SocketMessage {
+    type: string;
+    payload;
+}
+
+interface AuthenticatedSocket {
+    socket: WebSocket;
+    user: string;
+}
+
+server.on('connection', (socket) => {
+    console.log('Connection opened!');
+
+    let username;
+
+    socket.on('message', async (data) => {
+        try {
+            const object = JSON.parse(data.toString());
+            if (!object.type || !object.payload) {
+                await socket.send(JSON.stringify({ type: 'error', payload: 'Missing required parameters!' }));
+                await socket.send(JSON.stringify({ type: 'authAck', payload: false }));
+                socket.close();
+            }
+
+            const sm: SocketMessage = { type: object.type, payload: object.payload };
+
+            if (sm.type === 'auth') {
+                const token = sm.payload.token;
+                const sig = sm.payload.signature;
+                const uname = sm.payload.uname;
+
+                if (!token || !sig || !uname) {
+                    await socket.send(JSON.stringify({ type: 'error', payload: 'Missing required parameters!' }));
+                    await socket.send(JSON.stringify({ type: 'authAck', payload: false }));
+                    socket.close();
+                }
+
+                const user = await User.fromUsername(uname);
+
+                if (user.verifyToken(token, sig)) {
+                    username = user.getUsername();
+                    sockets.push({ socket, user: username });
+                    socket.send(JSON.stringify({ type: 'authAck', payload: true }));
+                } else {
+                    socket.send(JSON.stringify({ type: 'authAck', payload: false }));
+                }
+            } else {
+                socket.send(JSON.stringify({ type: 'error', payload: 'Invalid socket message type' }));
+                socket.close();
+            }
+        } catch (e) {
+            console.error(e);
+            socket.close();
+        }
+    });
+
+    socket.on('close', () => {
+        console.log('Connection closed!');
+
+        if (username)
+            sockets = sockets.filter(s => s.user !== username);
+    });
 });
